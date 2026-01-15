@@ -1,0 +1,16 @@
+<routes>
+    <vType id="normal_araba" accel="1.0" decel="4.5" length="5" maxSpeed="50" color="yellow"/>
+    <vType id="ambulans" accel="3.0" decel="4.5" length="7" maxSpeed="80" vClass="emergency" guiShape="emergency" color="red"/>
+
+    <flow id="f_yatay" type="normal_araba" begin="0" end="600" probability="0.1" from="E6" to="E8"/>
+
+   
+
+    <vehicle id="ambulans_1" type="ambulans" depart="20" departPos="0">
+        <route edges="-E9 E7"/>
+    </vehicle>
+    <flow id="f_dikey" type="normal_araba" begin="150" end="180" probability="0.1" from="-E9" to="E7"/>
+    <vehicle id="ambulans_2" type="ambulans" depart="180" departPos="0">
+        <route edges="-E9 E7"/>
+    </vehicle>
+</routes>
