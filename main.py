@@ -2,146 +2,105 @@ import os
 import sys
 import time
 import socket
+import select
 
 
 pi_ip = '192.168.1.21'
 pi_port = 12345
-
-
 sumo_config_file = "simulasyon.sumo.cfg"
 kavsak_id = "J9"
-ambulans_yolu_id = "-E9"
-ambulans_seridi_id = "-E9_0"
-
-
-FAZ_AMBULANS_YESIL = 0
-FAZ_AMBULANS_KIRMIZI = 2
-
-# Mesafe ve Süre
-base_mesafe = 50.0
-arac_basina_ek = 8.0
-gecikme_suresi = 4
-
+FAZ_YESIL = 0
+FAZ_SARI = 1
+FAZ_KIRMIZI = 2
+SARI_SURESI = 3.0
 
 client_socket = None
-
 
 def baglanti_kur():
     global client_socket
     try:
-        print(f" Raspberry Pi'ye bağlanılıyor... ({pi_ip}:{pi_port})")
+        print(f"Baglaniliyor... {pi_ip}")
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client_socket.settimeout(5)
         client_socket.connect((pi_ip, pi_port))
-        print("BAŞARILI! Bağlantı kuruldu.")
+        client_socket.setblocking(0)
+        print("BAGLANDI")
     except:
-        print("UYARI: Raspberry Pi bulunamadı, simülasyon internetsiz devam ediyor.")
-
+        print("Pi Yok")
 
 def sinyal_gonder(mesaj):
     if client_socket:
-        try:
-            client_socket.send(mesaj.encode())
-        except:
-            pass
+        try: client_socket.send(mesaj.encode())
+        except: pass
 
-
-
-# SUMO BAŞLATMA
 
 if 'SUMO_HOME' in os.environ:
-    tools = os.path.join(os.environ['SUMO_HOME'], 'tools')
-    sys.path.append(tools)
-else:
-    sys.exit("HATA: SUMO_HOME bulunamadı.")
-
+    sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
 import traci
-
-sumoCmd = ["sumo-gui", "-c", sumo_config_file, "--start", "--delay", "100"]
-
+traci.start(["sumo-gui", "-c", sumo_config_file, "--start", "--delay", "100"])
 baglanti_kur()
-traci.start(sumoCmd)
+
+STATE_RED = 0
+STATE_GREEN = 1
+STATE_YELLOW = 2
+
+mevcut_state = STATE_RED
+state_baslangic_zamani = 0
+traci.trafficlight.setPhase(kavsak_id, FAZ_KIRMIZI)
 
 
-# Simülasyon başlar başlamaz ışığı KIRMIZI (Normal Trafik) yapıyoruz.
-traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_KIRMIZI)
-print("🔒 Işıklar Varsayılan Konuma (KIRMIZI) Kilitlendi.")
-
-
-durum_gonderildi = False
-acil_durum_modu = False
-son_ambulans_zamani = 0
+kamera_aktif_hafiza = False
 
 while traci.simulation.getMinExpectedNumber() > 0:
     traci.simulationStep()
+    sim_time = traci.simulation.getTime()
 
-    su_anki_zaman = traci.simulation.getTime()
-    arac_listesi = traci.vehicle.getIDList()
+    # MESAJ OKU
+    if client_socket:
+        try:
+            ready, _, _ = select.select([client_socket], [], [], 0)
+            if ready:
+                msg = client_socket.recv(1024).decode()
+                if "AMBULANS_GELDI" in msg:
+                    kamera_aktif_hafiza = True
+                    print("📡 Sinyal: GELDI")
+                elif "AMBULANS_GITTI" in msg:
+                    kamera_aktif_hafiza = False
+                    print("📡 Sinyal: GITTI")
+        except: pass
 
-    # Ambulansı Bul
-    aktif_ambulans = None
-    for arac in arac_listesi:
-        if "ambulans" in arac:
-            aktif_ambulans = arac
+    # SANAL KONTROL
+    sanal_ambulans = False
+    for v in traci.vehicle.getIDList():
+        if "ambulans" in v:
+            try:
+                if traci.vehicle.getNextTLS(v)[0][2] < 60: sanal_ambulans = True
+            except: pass
             break
 
-    # AMBULANS VARSA
-    if aktif_ambulans:
-        try:
-            tls_data = traci.vehicle.getNextTLS(aktif_ambulans)
-            if len(tls_data) > 0:
-                mesafe = tls_data[0][2]
+    #  MANTIK
+    if kamera_aktif_hafiza or sanal_ambulans:
+        if mevcut_state != STATE_GREEN:
+            traci.trafficlight.setPhase(kavsak_id, FAZ_YESIL)
+            mevcut_state = STATE_GREEN
+            sinyal_gonder("AMBULANS_GELDI")
 
-                # Kuyruk Hesabı
-                seritteki_araclar = traci.lane.getLastStepVehicleIDs(ambulans_seridi_id)
-                ambulans_konumu = traci.vehicle.getLanePosition(aktif_ambulans)
-                onundeki_arac_sayisi = 0
-                for diger_arac in seritteki_araclar:
-                    if diger_arac == aktif_ambulans: continue
-                    if traci.vehicle.getLanePosition(diger_arac) > ambulans_konumu:
-                        onundeki_arac_sayisi += 1
-
-                tetikleme_mesafesi = base_mesafe + (onundeki_arac_sayisi * arac_basina_ek)
-
-                # Mesafeye girdiyse YEŞİL yap
-                if mesafe < tetikleme_mesafesi:
-                    traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_YESIL)
-                    son_ambulans_zamani = su_anki_zaman
-                    acil_durum_modu = True
-
-                    if not durum_gonderildi:
-                        sinyal_gonder("AMBULANS_GELDI")
-                        print(f"🚑 YEŞİL YAKILDI! (Mesafe: {mesafe:.1f}m)")
-                        durum_gonderildi = True
-
-        except:
-            pass
-
-    # AMBULANS YOKSA
     else:
-        # Eğer acil durum modundaysak (Ambulans yeni gittiyse)
-        if acil_durum_modu:
-            gecen_sure = su_anki_zaman - son_ambulans_zamani
+        # Normale Dönüş
+        if mevcut_state == STATE_GREEN:
+            traci.trafficlight.setPhase(kavsak_id, FAZ_SARI)
+            mevcut_state = STATE_YELLOW
+            state_baslangic_zamani = sim_time
+            sinyal_gonder("AMBULANS_GITTI") # Pi Sarı yakacak
 
-            # Güvenlik süresi (4 saniye) bitti mi?
-            if gecen_sure > gecikme_suresi:
-                # EVET BİTTİ KIRMIZIYA DÖN VE KİLİTLE
-                traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_KIRMIZI)
-                acil_durum_modu = False
+        elif mevcut_state == STATE_YELLOW:
+            if sim_time - state_baslangic_zamani >= SARI_SURESI:
+                traci.trafficlight.setPhase(kavsak_id, FAZ_KIRMIZI)
+                mevcut_state = STATE_RED
+                sinyal_gonder("SISTEM_KIRMIZI") # Pi Kırmızı yakacak
 
-                if durum_gonderildi:
-                    sinyal_gonder("AMBULANS_GITTI")
-                    print("🛑 Ambulans geçti, sistem KIRMIZIYA kilitlendi.")
-                    time.sleep(2)
-                    durum_gonderildi = False
-            else:
-                # HAYIR BİTMEDİ Hala Yeşil tut (Kavşak boşalsın)
-                traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_YESIL)
-
-        # Acil durum yoksa, standart olarak hep KIRMIZI tut
-        else:
-            traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_KIRMIZI)
+        elif mevcut_state == STATE_RED:
+            traci.trafficlight.setPhase(kavsak_id, FAZ_KIRMIZI)
 
 traci.close()
-if client_socket:
-    client_socket.close()
+if client_socket: client_socket.close()

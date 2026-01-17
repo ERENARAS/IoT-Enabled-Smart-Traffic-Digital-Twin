@@ -6,7 +6,7 @@
 
    
 
-    <vehicle id="ambulans_1" type="ambulans" depart="20" departPos="0">
+    <vehicle id="ambulans_1" type="ambulans" depart="60" departPos="0">
         <route edges="-E9 E7"/>
     </vehicle>
     <flow id="f_dikey" type="normal_araba" begin="150" end="180" probability="0.1" from="-E9" to="E7"/>
