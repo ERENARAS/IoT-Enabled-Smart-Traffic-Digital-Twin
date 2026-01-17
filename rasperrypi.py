@@ -113,7 +113,7 @@ try:
 
                     try:
                         conn.send("AMBULANS_GITTI".encode())
-                        print("KAMERA: Gitti -> Mac'e bildirildi")
+                        print("KAMERA: Gitti")
                     except:
                         pass
                     kirmizi_algilandi = False

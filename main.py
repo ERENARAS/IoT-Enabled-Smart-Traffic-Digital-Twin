@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import socket
 import select
 
@@ -63,10 +62,10 @@ while traci.simulation.getMinExpectedNumber() > 0:
                 msg = client_socket.recv(1024).decode()
                 if "AMBULANS_GELDI" in msg:
                     kamera_aktif_hafiza = True
-                    print("📡 Sinyal: GELDI")
+                    print(" Sinyal: GELDI")
                 elif "AMBULANS_GITTI" in msg:
                     kamera_aktif_hafiza = False
-                    print("📡 Sinyal: GITTI")
+                    print(" Sinyal: GITTI")
         except: pass
 
     # SANAL KONTROL
