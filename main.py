@@ -1,7 +1,53 @@
 import os
 import sys
 import time
+import socket
 
+
+pi_ip = '192.168.1.21'
+pi_port = 12345
+
+
+sumo_config_file = "simulasyon.sumo.cfg"
+kavsak_id = "J9"
+ambulans_yolu_id = "-E9"
+ambulans_seridi_id = "-E9_0"
+
+
+FAZ_AMBULANS_YESIL = 0
+FAZ_AMBULANS_KIRMIZI = 2
+
+# Mesafe ve Süre
+base_mesafe = 50.0
+arac_basina_ek = 8.0
+gecikme_suresi = 4
+
+
+client_socket = None
+
+
+def baglanti_kur():
+    global client_socket
+    try:
+        print(f" Raspberry Pi'ye bağlanılıyor... ({pi_ip}:{pi_port})")
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_socket.settimeout(5)
+        client_socket.connect((pi_ip, pi_port))
+        print("BAŞARILI! Bağlantı kuruldu.")
+    except:
+        print("UYARI: Raspberry Pi bulunamadı, simülasyon internetsiz devam ediyor.")
+
+
+def sinyal_gonder(mesaj):
+    if client_socket:
+        try:
+            client_socket.send(mesaj.encode())
+        except:
+            pass
+
+
+
+# SUMO BAŞLATMA
 
 if 'SUMO_HOME' in os.environ:
     tools = os.path.join(os.environ['SUMO_HOME'], 'tools')
@@ -11,99 +57,91 @@ else:
 
 import traci
 
+sumoCmd = ["sumo-gui", "-c", sumo_config_file, "--start", "--delay", "100"]
 
-sumoCmd = ["sumo-gui", "-c", "simulasyon.sumo.cfg", "--start", "--delay", "100"]
-
-
-kavsak_id = "J9"
-ambulans_yolu_id = "-E9"
-ambulans_seridi_id = "-E9_0"
-
-
-AMBULANS_YESIL = 0
-NORMAL_TRAFIK_YESIL = 2
-
-
-base_mesafe = 50.0
-arac_basina_ek = 8.0
-son_ambulans_zamani = 0
-gecikme_suresi = 4
-
+baglanti_kur()
 traci.start(sumoCmd)
-print(" Akıllı Trafik Sistemi Başlatıldı...")
 
-step = 0
+
+# Simülasyon başlar başlamaz ışığı KIRMIZI (Normal Trafik) yapıyoruz.
+traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_KIRMIZI)
+print("🔒 Işıklar Varsayılan Konuma (KIRMIZI) Kilitlendi.")
+
+
+durum_gonderildi = False
+acil_durum_modu = False
+son_ambulans_zamani = 0
+
 while traci.simulation.getMinExpectedNumber() > 0:
-    time.sleep(0.05)
     traci.simulationStep()
 
     su_anki_zaman = traci.simulation.getTime()
-
-
     arac_listesi = traci.vehicle.getIDList()
 
-
+    # Ambulansı Bul
     aktif_ambulans = None
     for arac in arac_listesi:
         if "ambulans" in arac:
             aktif_ambulans = arac
             break
 
+    # AMBULANS VARSA
     if aktif_ambulans:
         try:
-
-
             tls_data = traci.vehicle.getNextTLS(aktif_ambulans)
             if len(tls_data) > 0:
-                mesafe = tls_data[0][2]  # Işığa kalan metre
+                mesafe = tls_data[0][2]
 
-
+                # Kuyruk Hesabı
                 seritteki_araclar = traci.lane.getLastStepVehicleIDs(ambulans_seridi_id)
-                onundeki_arac_sayisi = 0
-
-
                 ambulans_konumu = traci.vehicle.getLanePosition(aktif_ambulans)
-
+                onundeki_arac_sayisi = 0
                 for diger_arac in seritteki_araclar:
-                    if diger_arac == aktif_ambulans:
-                        continue
-                    diger_konum = traci.vehicle.getLanePosition(diger_arac)
-
-                    if diger_konum > ambulans_konumu:
+                    if diger_arac == aktif_ambulans: continue
+                    if traci.vehicle.getLanePosition(diger_arac) > ambulans_konumu:
                         onundeki_arac_sayisi += 1
-
 
                 tetikleme_mesafesi = base_mesafe + (onundeki_arac_sayisi * arac_basina_ek)
 
-
+                # Mesafeye girdiyse YEŞİL yap
                 if mesafe < tetikleme_mesafesi:
-                    traci.trafficlight.setPhase(kavsak_id, AMBULANS_YESIL)
-                    son_ambulans_zamani = su_anki_zaman  # Zaman damgasını güncelle
+                    traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_YESIL)
+                    son_ambulans_zamani = su_anki_zaman
+                    acil_durum_modu = True
 
-                    print(f" {aktif_ambulans} GELİYOR!")
-                    print(f"   - Mesafe: {mesafe:.1f}m")
-                    print(f"   - Önündeki Araç: {onundeki_arac_sayisi} tane")
-                    print(f"   - Yeni Tetikleme Mesafesi: {tetikleme_mesafesi:.1f}m")
-                    print("   -> IŞIKLAR YEŞİL KİLİTLENDİ! ")
-                else:
-                    pass
+                    if not durum_gonderildi:
+                        sinyal_gonder("AMBULANS_GELDI")
+                        print(f"🚑 YEŞİL YAKILDI! (Mesafe: {mesafe:.1f}m)")
+                        durum_gonderildi = True
 
-        except Exception as e:
+        except:
             pass
 
-
+    # AMBULANS YOKSA
     else:
+        # Eğer acil durum modundaysak (Ambulans yeni gittiyse)
+        if acil_durum_modu:
+            gecen_sure = su_anki_zaman - son_ambulans_zamani
 
-        gecen_sure = su_anki_zaman - son_ambulans_zamani
+            # Güvenlik süresi (4 saniye) bitti mi?
+            if gecen_sure > gecikme_suresi:
+                # EVET BİTTİ KIRMIZIYA DÖN VE KİLİTLE
+                traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_KIRMIZI)
+                acil_durum_modu = False
 
-        if gecen_sure < gecikme_suresi:
-            traci.trafficlight.setPhase(kavsak_id, AMBULANS_YESIL)
-            print(f"✋ Güvenlik Gecikmesi: {gecikme_suresi - gecen_sure:.1f}sn daha bekleniyor...")
+                if durum_gonderildi:
+                    sinyal_gonder("AMBULANS_GITTI")
+                    print("🛑 Ambulans geçti, sistem KIRMIZIYA kilitlendi.")
+                    time.sleep(2)
+                    durum_gonderildi = False
+            else:
+                # HAYIR BİTMEDİ Hala Yeşil tut (Kavşak boşalsın)
+                traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_YESIL)
 
+        # Acil durum yoksa, standart olarak hep KIRMIZI tut
         else:
-            traci.trafficlight.setPhase(kavsak_id, NORMAL_TRAFIK_YESIL)
-
-    step += 1
+            traci.trafficlight.setPhase(kavsak_id, FAZ_AMBULANS_KIRMIZI)
 
 traci.close()
-print("Simülasyon Bitti.")
+if client_socket:
+    client_socket.close()
