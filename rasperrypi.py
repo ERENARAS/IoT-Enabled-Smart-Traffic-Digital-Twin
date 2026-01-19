@@ -9,72 +9,73 @@ from RPLCD.i2c import CharLCD
 HOST = '0.0.0.0'
 PORT = 12345
 
+# LCD Setup
 lcd = CharLCD(i2c_expander='PCF8574', address=0x27, port=1, cols=16, rows=2, dotsize=8)
 
-KIRMIZI_PIN = 17
-SARI_PIN = 22
-YESIL_PIN = 27
+RED_PIN = 17
+YELLOW_PIN = 22
+GREEN_PIN = 27
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setwarnings(False)
-GPIO.setup(KIRMIZI_PIN, GPIO.OUT)
-GPIO.setup(SARI_PIN, GPIO.OUT)
-GPIO.setup(YESIL_PIN, GPIO.OUT)
+GPIO.setup(RED_PIN, GPIO.OUT)
+GPIO.setup(YELLOW_PIN, GPIO.OUT)
+GPIO.setup(GREEN_PIN, GPIO.OUT)
 
 
-def ekran_yaz(satir1, satir2):
+def write_to_screen(line1, line2):
     try:
         lcd.clear()
         lcd.cursor_pos = (0, 0)
-        lcd.write_string(satir1)
+        lcd.write_string(line1)
         lcd.cursor_pos = (1, 0)
-        lcd.write_string(satir2)
+        lcd.write_string(line2)
     except:
         pass
 
 
-def isiklari_sondur():
-    GPIO.output(KIRMIZI_PIN, GPIO.LOW)
-    GPIO.output(SARI_PIN, GPIO.LOW)
-    GPIO.output(YESIL_PIN, GPIO.LOW)
+def turn_off_lights():
+    GPIO.output(RED_PIN, GPIO.LOW)
+    GPIO.output(YELLOW_PIN, GPIO.LOW)
+    GPIO.output(GREEN_PIN, GPIO.LOW)
 
 
-def mod_kirmizi():
-    isiklari_sondur()
-    GPIO.output(KIRMIZI_PIN, GPIO.HIGH)
-    ekran_yaz("DURUM: GUVENLI", "Kamera Aktif...")
+def mode_red():
+    turn_off_lights()
+    GPIO.output(RED_PIN, GPIO.HIGH)
+    write_to_screen("STATUS: SAFE", "Camera Active...")
 
 
-def mod_yesil():
-    isiklari_sondur()
-    GPIO.output(YESIL_PIN, GPIO.HIGH)
-    ekran_yaz("!!! ACIL DURUM !!!", "AMBULANS GECIYOR")
+def mode_green():
+    turn_off_lights()
+    GPIO.output(GREEN_PIN, GPIO.HIGH)
+    write_to_screen("!! EMERGENCY !!", "AMBULANCE PASS")
 
 
-def mod_sari():
-    isiklari_sondur()
-    GPIO.output(SARI_PIN, GPIO.HIGH)
-    ekran_yaz("DIKKAT!", "Normale Donuyor")
+def mode_yellow():
+    turn_off_lights()
+    GPIO.output(YELLOW_PIN, GPIO.HIGH)
+    write_to_screen("CAUTION!", "Returning Normal")
 
 
-print("Sistem Baslatiliyor...")
-mod_kirmizi()
+print("System Starting...")
+mode_red()
 
 server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server_socket.bind((HOST, PORT))
 server_socket.listen(1)
 
-print("Baglanti Bekleniyor...")
+print("Waiting for connection...")
 conn, addr = server_socket.accept()
-print(f"Baglandi: {addr}")
+print(f"Connected: {addr}")
 conn.setblocking(0)
 
 cap = cv2.VideoCapture(0)
 cap.set(3, 320)
 cap.set(4, 240)
 
-kirmizi_algilandi = False
+red_detected = False
 
 try:
     while True:
@@ -82,6 +83,7 @@ try:
         ret, frame = cap.read()
         if ret:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            # Red color range
             lower1 = np.array([0, 100, 100])
             upper1 = np.array([10, 255, 255])
             lower2 = np.array([170, 100, 100])
@@ -89,56 +91,56 @@ try:
             mask = cv2.inRange(hsv, lower1, upper1) + cv2.inRange(hsv, lower2, upper2)
 
             contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            su_an_kirmizi_var = False
+            red_present_now = False
             for c in contours:
                 if cv2.contourArea(c) > 500:
-                    su_an_kirmizi_var = True
+                    red_present_now = True
                     x, y, w, h = cv2.boundingRect(c)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
                     break
 
-            if su_an_kirmizi_var:
-                if not kirmizi_algilandi:
-
-                    mod_yesil()
+            # LOGIC: Sending signals to PC
+            if red_present_now:
+                if not red_detected:
+                    mode_green()
                     try:
-                        conn.send("AMBULANS_GELDI".encode())
-                        print("KAMERA: Gördüm -> Yeşil Yaktım")
+                        conn.send("AMBULANCE_ARRIVED".encode())
+                        print("CAMERA: Saw -> Turned Green")
                     except:
                         pass
-                    kirmizi_algilandi = True
+                    red_detected = True
 
             else:
-                if kirmizi_algilandi:
-
+                if red_detected:
                     try:
-                        conn.send("AMBULANS_GITTI".encode())
-                        print("KAMERA: Gitti")
+                        conn.send("AMBULANCE_DEPARTED".encode())
+                        print("CAMERA: Departed")
                     except:
                         pass
-                    kirmizi_algilandi = False
+                    red_detected = False
 
-            cv2.imshow('Kamera', frame)
+            cv2.imshow('Camera', frame)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
 
+        # LOGIC: Receiving signals from PC
         try:
             ready, _, _ = select.select([conn], [], [], 0)
             if ready:
                 data = conn.recv(1024).decode()
 
-                if not kirmizi_algilandi:
-                    if "AMBULANS_GITTI" in data:
-                        mod_sari()
-                    elif "SISTEM_KIRMIZI" in data:
-                        mod_kirmizi()
-                    elif "AMBULANS_GELDI" in data:
-                        mod_yesil()
+                if not red_detected: # Only listen to PC if camera doesn't see ambulance
+                    if "AMBULANCE_DEPARTED" in data:
+                        mode_yellow()
+                    elif "SYSTEM_RED" in data:
+                        mode_red()
+                    elif "AMBULANCE_ARRIVED" in data:
+                        mode_green()
 
         except:
             pass
 
 except KeyboardInterrupt:
-    print("Kapatiliyor...")
+    print("Shutting down...")
 finally:
     GPIO.cleanup()
     cap.release()

@@ -7,48 +7,51 @@ import select
 pi_ip = '192.168.1.21'
 pi_port = 12345
 sumo_config_file = "simulasyon.sumo.cfg"
-kavsak_id = "J9"
-FAZ_YESIL = 0
-FAZ_SARI = 1
-FAZ_KIRMIZI = 2
-SARI_SURESI = 3.0
+junction_id = "J9"
+PHASE_GREEN = 0
+PHASE_YELLOW = 1
+PHASE_RED = 2
+YELLOW_DURATION = 3.0
 
 client_socket = None
 
-def baglanti_kur():
+def establish_connection():
     global client_socket
     try:
-        print(f"Baglaniliyor... {pi_ip}")
+        print(f"Connecting... {pi_ip}")
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client_socket.settimeout(5)
         client_socket.connect((pi_ip, pi_port))
         client_socket.setblocking(0)
-        print("BAGLANDI")
+        print("CONNECTED")
     except:
-        print("Pi Yok")
+        print("Pi Not Found")
 
-def sinyal_gonder(mesaj):
+def send_signal(message):
     if client_socket:
-        try: client_socket.send(mesaj.encode())
-        except: pass
+        try:
+            client_socket.send(message.encode())
+        except:
+            pass
 
 
 if 'SUMO_HOME' in os.environ:
     sys.path.append(os.path.join(os.environ['SUMO_HOME'], 'tools'))
+    
 import traci
 traci.start(["sumo-gui", "-c", sumo_config_file, "--start", "--delay", "100"])
-baglanti_kur()
+establish_connection()
 
 STATE_RED = 0
 STATE_GREEN = 1
 STATE_YELLOW = 2
 
-mevcut_state = STATE_RED
-state_baslangic_zamani = 0
-traci.trafficlight.setPhase(kavsak_id, FAZ_KIRMIZI)
+current_state = STATE_RED
+state_start_time = 0
+traci.trafficlight.setPhase(junction_id, PHASE_RED)
 
 
-kamera_aktif_hafiza = False
+camera_active_memory = False
 
 while traci.simulation.getMinExpectedNumber() > 0:
     traci.simulationStep()
@@ -60,46 +63,46 @@ while traci.simulation.getMinExpectedNumber() > 0:
             ready, _, _ = select.select([client_socket], [], [], 0)
             if ready:
                 msg = client_socket.recv(1024).decode()
-                if "AMBULANS_GELDI" in msg:
-                    kamera_aktif_hafiza = True
-                    print(" Sinyal: GELDI")
-                elif "AMBULANS_GITTI" in msg:
-                    kamera_aktif_hafiza = False
-                    print(" Sinyal: GITTI")
+                if "AMBULANCE_ARRIVED" in msg:
+                    camera_active_memory = True
+                    print(" Signal: ARRIVED")
+                elif "AMBULANCE_DEPARTED" in msg:
+                    camera_active_memory = False
+                    print(" Signal: DEPARTED")
         except: pass
 
     # SANAL KONTROL
-    sanal_ambulans = False
+    virtual_ambulance = False
     for v in traci.vehicle.getIDList():
         if "ambulans" in v:
             try:
-                if traci.vehicle.getNextTLS(v)[0][2] < 60: sanal_ambulans = True
+                if traci.vehicle.getNextTLS(v)[0][2] < 60: virtual_ambulance = True
             except: pass
             break
 
     #  MANTIK
-    if kamera_aktif_hafiza or sanal_ambulans:
-        if mevcut_state != STATE_GREEN:
-            traci.trafficlight.setPhase(kavsak_id, FAZ_YESIL)
-            mevcut_state = STATE_GREEN
-            sinyal_gonder("AMBULANS_GELDI")
+    if camera_active_memory or virtual_ambulance:
+        if current_state != STATE_GREEN:
+            traci.trafficlight.setPhase(junction_id, PHASE_GREEN)
+            current_state = STATE_GREEN
+            send_signal("AMBULANCE_ARRIVED")
 
     else:
         # Normale Dönüş
-        if mevcut_state == STATE_GREEN:
-            traci.trafficlight.setPhase(kavsak_id, FAZ_SARI)
-            mevcut_state = STATE_YELLOW
-            state_baslangic_zamani = sim_time
-            sinyal_gonder("AMBULANS_GITTI") # Pi Sarı yakacak
+        if current_state == STATE_GREEN:
+            traci.trafficlight.setPhase(junction_id, PHASE_YELLOW)
+            current_state = STATE_YELLOW
+            state_start_time = sim_time
+            send_signal("AMBULANCE_DEPARTED") # Pi turns on Yellow
 
-        elif mevcut_state == STATE_YELLOW:
-            if sim_time - state_baslangic_zamani >= SARI_SURESI:
-                traci.trafficlight.setPhase(kavsak_id, FAZ_KIRMIZI)
-                mevcut_state = STATE_RED
-                sinyal_gonder("SISTEM_KIRMIZI") # Pi Kırmızı yakacak
+        elif current_state == STATE_YELLOW:
+            if sim_time - state_start_time >= YELLOW_DURATION:
+                traci.trafficlight.setPhase(junction_id, PHASE_RED)
+                current_state = STATE_RED
+                send_signal("SYSTEM_RED") # Pi turns on Red
 
-        elif mevcut_state == STATE_RED:
-            traci.trafficlight.setPhase(kavsak_id, FAZ_KIRMIZI)
+        elif current_state == STATE_RED:
+            traci.trafficlight.setPhase(junction_id, PHASE_RED)
 
 traci.close()
 if client_socket: client_socket.close()
